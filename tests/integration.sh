@@ -56,6 +56,14 @@ activate_release releases/integration
 docker rm "$LOCK_ID" >/dev/null
 trap cleanup_tests EXIT
 sh scripts/start.sh
+renewal_attempt=0
+until docker exec "$GATEWAY_NAME-renewal" test -f /tmp/renewal-success; do
+    renewal_attempt=$((renewal_attempt + 1))
+    [ "$renewal_attempt" -lt 60 ] || fail 'Scheduled Docker renewal did not complete its first run'
+    sleep 1
+done
+docker exec "$GATEWAY_NAME-renewal" test ! -f /tmp/renewal-failed || fail 'Scheduled renewal failed'
+docker logs "$GATEWAY_NAME-renewal"
 docker run --rm --mount "type=volume,src=$ACME_VOLUME,dst=/acme" --entrypoint sh "$NGINX_IMAGE" \
     -c 'mkdir -p /acme/.well-known/acme-challenge; printf acme-ok > /acme/.well-known/acme-challenge/probe'
 docker run --rm --network "container:$GATEWAY_NAME" \
