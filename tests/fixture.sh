@@ -60,6 +60,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.flush()
             self.close_connection = True
             return
+        if self.path == '/large-cookie':
+            self.send_response(302)
+            self.send_header('Location', '/after-login')
+            self.send_header('Set-Cookie', 'gateway-test=' + 'x' * 10240 + '; Path=/; HttpOnly; Secure; SameSite=Lax')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
         response = json.dumps({'backend': self.server.server_port, 'headers': dict(self.headers)}).encode()
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')

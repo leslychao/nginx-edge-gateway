@@ -31,6 +31,8 @@ Helmglass доверяет заголовкам только от gateway `172.3
 
 Таймауты: connect 5 s, read/send 60 s, WebSocket read 75 s. Для долгих WebSocket-сессий нужен heartbeat чаще 75 s. Общий лимит тела 20 MiB; увеличивать адресно для приложения, которому это требуется. CSP и HSTS задаются адресно владельцем приложения.
 
+Буфер заголовков ответа upstream — 16 KiB, чтобы увеличенные cookie Keycloak при повторном OAuth-входе не вызывали `502`. Этот предел действует и при `proxy_buffering off`; для маршрутов с буферизацией тела заданы 4 буфера по 16 KiB и `proxy_busy_buffers_size 32k`. Ограничение необходимо соблюдать на каждом прокси между приложением и браузером.
+
 ## DNS и роутер
 
 DNS работает отдельно от Nginx. Например:
@@ -179,6 +181,6 @@ sh scripts/validate.sh
 sh tests/integration.sh
 ```
 
-Интеграционный тест создаёт отдельные `nginx-edge-local-*` ресурсы, отказывается заменять существующий local gateway, выпускает **временный тестовый CA только в disposable volume**, проверяет разные backend, заголовки, HTTP/HTTPS, проверку CA/имени upstream, WebSocket echo, неизвестный Host/SNI, невалидный reload, graceful stop/start. Рабочие сертификаты и приложение не затрагиваются.
+Интеграционный тест создаёт отдельные `nginx-edge-local-*` ресурсы, отказывается заменять существующий local gateway, выпускает **временный тестовый CA только в disposable volume**, проверяет разные backend, заголовки, HTTP/HTTPS, передачу redirect с тестовой cookie размером 10 KiB через HTTP/HTTPS upstream и TLS-маршрут Helmglass, проверку CA/имени upstream, WebSocket echo, неизвестный Host/SNI, невалидный reload, graceful stop/start. Рабочие сертификаты и приложение не затрагиваются.
 
 Перед объявлением live-ready отдельно подтвердить: устойчивость к поддельным IP-заголовкам и фактически видимый Docker адрес; доверенный `https://helmg.ru`; login Keycloak/OAuth2 Proxy и Redis session; API/MCP issuer/URLs; прямой deploy из IDEA; ACME dry-run и успешный запуск renewal-контейнера; восстановление после перезагрузки Windows; откат неуспешного deploy. Успех локальных тестов не является отметкой о выполнении этих внешних проверок.

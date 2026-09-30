@@ -35,6 +35,12 @@ assert request('helmg.ru')[0] == 308
 assert request('helmg.ru', '/.well-known/acme-challenge/probe')[2] == b'acme-ok'
 assert request('helmg.ru', tls=True)[0] == 200
 assert request('secure.example.com')[0] == 200
+for host, tls in [('plain.example.com', False), ('secure.example.com', False), ('helmg.ru', True)]:
+    status, headers, body = request(host, '/large-cookie', tls)
+    assert status == 302, f'Large response cookie rejected for {host}: HTTP {status}'
+    assert headers.get('Location') == '/after-login', f'Redirect changed for {host}'
+    assert headers.get('Set-Cookie') == 'gateway-test=' + 'x' * 10240 + '; Path=/; HttpOnly; Secure; SameSite=Lax', f'Cookie changed for {host}'
+    assert body == b'', f'Redirect body changed for {host}'
 assert request('wrong-name.example.com')[0] == 502, 'Upstream certificate name verification is disabled'
 assert request('untrusted.example.com')[0] == 502, 'Upstream CA verification is disabled'
 try:
@@ -56,5 +62,5 @@ with connect() as sock:
     while len(frame) < 6:
         frame += sock.recv(6-len(frame))
     assert frame == b'\x81\x04echo', frame
-print('PASS: host routing, headers, unknown Host/SNI, HTTP redirect, ACME, TLS frontend, verified TLS backend, WS echo')
+print('PASS: host routing, headers, 10 KiB response cookie, unknown Host/SNI, HTTP redirect, ACME, TLS frontend, verified TLS backend, WS echo')
 PY
