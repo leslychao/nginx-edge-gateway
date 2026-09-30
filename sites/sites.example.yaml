@@ -1,0 +1,23 @@
+# Documentation only. add-site.sh is the current generator; examples are not
+# automatically activated. Frontend TLS and backend TLS are independent.
+sites:
+  - domain: app1.example.com
+    backend:
+      scheme: http
+      host: 192.168.1.20
+      port: 8080
+    websocket: false
+  - domain: app2.example.com
+    backend:
+      scheme: http
+      host: 192.168.1.30
+      port: 3000
+    websocket: true
+  - domain: api.example.com
+    backend:
+      scheme: https
+      host: 192.168.1.10
+      port: 9000
+      tls_name: api.internal.example.com
+      trusted_ca: /etc/ssl/certs/ca-certificates.crt
+    websocket: false

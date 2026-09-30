@@ -1,0 +1,50 @@
+services:
+  gateway:
+    image: ${NGINX_IMAGE:?Required pinned image}
+    container_name: ${GATEWAY_NAME:?Required}
+    restart: unless-stopped
+    entrypoint: [nginx]
+    command: [-p, /gateway/current/, -c, nginx.conf, -g, "daemon off;"]
+    ports:
+      - ${HTTP_BIND:?Required}:80
+      - ${HTTPS_BIND:?Required}:443
+    volumes:
+      - config:/gateway:ro
+      - certificates:/certificates:ro
+      - acme:/var/www/acme:ro
+    networks:
+      transport: {}
+      backend:
+        ipv4_address: ${GATEWAY_BACKEND_IP:?Required}
+    stop_signal: SIGQUIT
+    stop_grace_period: 30s
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8081/__gateway_revision]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+    security_opt: [no-new-privileges:true]
+
+volumes:
+  config:
+    external: true
+    name: ${CONFIG_VOLUME:?Required}
+  certificates:
+    external: true
+    name: ${CERT_VOLUME:?Required}
+  acme:
+    external: true
+    name: ${ACME_VOLUME:?Required}
+
+networks:
+  backend:
+    external: true
+    name: ${BACKEND_NETWORK:?Required}
+  transport:
+    external: true
+    name: ${TRANSPORT_NETWORK:?Required}

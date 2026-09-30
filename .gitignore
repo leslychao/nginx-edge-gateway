@@ -1,0 +1,13 @@
+nginx/certs/*
+!nginx/certs/.gitkeep
+*.key
+*.pem
+*.p12
+*.pfx
+*.secrets
+.env
+.env.*.secrets
+.work/
+*.log
+*.zip
+.idea/
