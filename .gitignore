@@ -1,5 +1,3 @@
-nginx/certs/*
-!nginx/certs/.gitkeep
 *.key
 *.pem
 *.p12

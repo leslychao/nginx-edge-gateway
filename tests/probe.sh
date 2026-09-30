@@ -9,7 +9,6 @@ import ssl
 def connect(tls=False, host='helmg.ru'):
     port = 443 if tls else 80
     sock = socket.create_connection(('127.0.0.1', port), timeout=5)
-    sock.sendall(f'PROXY TCP4 198.51.100.23 127.0.0.1 12345 {port}\r\n'.encode())
     if tls:
         sock = ssl.create_default_context(cafile='/certificates/ca.crt').wrap_socket(sock, server_hostname=host)
     return sock
@@ -26,11 +25,10 @@ assert status == 200, (status, body)
 plain = json.loads(body)
 assert plain['backend'] == 8080
 assert plain['headers']['Host'] == 'plain.example.com'
-# The injected PROXY sender is loopback and is deliberately NOT trusted by the
-# production trust config. Neither PROXY nor forwarded headers can spoof it.
+# Both address headers must come from the TCP peer, never from visitor headers.
 assert plain['headers']['X-Real-IP'] == '127.0.0.1', plain
 assert plain['headers']['X-Forwarded-Proto'] == 'http'
-assert plain['headers']['X-Forwarded-For'].endswith(', 127.0.0.1')
+assert plain['headers']['X-Forwarded-For'] == '127.0.0.1', plain
 assert json.loads(request('second.example.com')[2])['backend'] == 8090
 assert request('unknown.invalid')[0] == 404
 assert request('helmg.ru')[0] == 308

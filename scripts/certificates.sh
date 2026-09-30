@@ -18,9 +18,19 @@ case "$operation" in
     renew) set -- renew "$@" ;;
     dry-run) set -- renew "$@" --dry-run ;;
 esac
+certbot_status=0
 docker run --rm --network "$TRANSPORT_NETWORK" \
     --mount "type=volume,src=$CERT_VOLUME,dst=/certificates" \
-    --mount "type=volume,src=$ACME_VOLUME,dst=/var/www/acme" "$CERTBOT_IMAGE" "$@"
+    --mount "type=volume,src=$ACME_VOLUME,dst=/var/www/acme" "$CERTBOT_IMAGE" "$@" || certbot_status=$?
 after=$(docker run --rm --network none --mount "type=volume,src=$CERT_VOLUME,dst=/certificates,readonly" \
     --entrypoint sh "$NGINX_IMAGE" -c 'find /certificates/live -name fullchain.pem -exec sha256sum {} \; 2>/dev/null | sort')
-if [ "$before" != "$after" ] && running; then reload_checked; fi
+if [ "$before" != "$after" ]; then
+    volume_command -c 'touch /gateway/certificate-reload-pending'
+fi
+# Keep the marker after a failed reload. The next renewal check must retry even
+# when Certbot has already written the new certificate and makes no more changes.
+if running && volume_command -c 'test -f /gateway/certificate-reload-pending'; then
+    reload_checked
+    volume_command -c 'rm /gateway/certificate-reload-pending'
+fi
+exit "$certbot_status"

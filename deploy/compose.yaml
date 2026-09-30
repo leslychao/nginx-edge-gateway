@@ -30,6 +30,31 @@ services:
         max-file: "5"
     security_opt: [no-new-privileges:true]
 
+  renewal:
+    image: ${DOCKER_CLI_IMAGE:?Required pinned Docker CLI image}
+    container_name: ${GATEWAY_NAME:?Required}-renewal
+    restart: unless-stopped
+    entrypoint: [sh, /gateway/current/automation/scripts/renew-loop.sh]
+    environment:
+      EDGE_ENV: ${EDGE_ENV:-local}
+      DOCKER_HOST: unix:///var/run/docker.sock
+    network_mode: none
+    volumes:
+      - config:/gateway:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: [CMD-SHELL, 'test ! -e /tmp/renewal-failed && test -f /tmp/renewal-success && test "$$(($$(date +%s) - $$(cat /tmp/renewal-success)))" -lt 25200']
+      interval: 60s
+      timeout: 3s
+      retries: 1
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+    security_opt: [no-new-privileges:true]
+
 volumes:
   config:
     external: true

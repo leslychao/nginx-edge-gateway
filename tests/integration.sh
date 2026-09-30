@@ -7,7 +7,7 @@ docker volume inspect "$CONFIG_VOLUME" >/dev/null 2>&1 && fail 'Local test resou
 cleanup_tests() {
     test_status=$?
     trap - EXIT
-    docker rm -f "$GATEWAY_NAME" "$GATEWAY_NAME-fixture" "$GATEWAY_NAME-operation-lock" >/dev/null 2>&1 || true
+    docker rm -f "$GATEWAY_NAME" "$GATEWAY_NAME-renewal" "$GATEWAY_NAME-fixture" "$GATEWAY_NAME-operation-lock" >/dev/null 2>&1 || true
     docker volume rm "$CONFIG_VOLUME" "$CERT_VOLUME" "$ACME_VOLUME" "$GATEWAY_NAME-fixtures" >/dev/null 2>&1 || true
     docker network rm "$BACKEND_NETWORK" "$TRANSPORT_NETWORK" >/dev/null 2>&1 || true
     exit "$test_status"
@@ -36,7 +36,7 @@ for test_site in plain second ws secure wrong-name untrusted; do
     [ "$test_site" != second ] || test_port=8090
     case "$test_site" in secure|wrong-name|untrusted) test_port=8443; test_scheme=https ;; esac
     {
-        printf 'server { listen 80 proxy_protocol; server_name %s.example.com; location / {\n' "$test_site"
+        printf 'server { listen 80; server_name %s.example.com; location / {\n' "$test_site"
         printf 'include snippets/proxy-common.conf;\n'
         [ "$test_site" != ws ] || printf 'include snippets/proxy-websocket.conf;\n'
         if [ "$test_scheme" = https ]; then
@@ -69,8 +69,13 @@ verify_revision integration || fail 'Invalid candidate disrupted the active conf
 volume_command -c 'printf "invalid_directive;\n" >> /gateway/current/nginx.conf'
 if sh scripts/reload.sh; then fail 'Invalid active configuration incorrectly reloaded'; fi
 verify_revision integration || fail 'Failed reload stopped the previous workers'
+volume_command -c 'touch /gateway/certificate-reload-pending'
+if sh scripts/certificates.sh renew; then fail 'Certificate operation ignored an invalid reload'; fi
+volume_command -c 'test -f /gateway/certificate-reload-pending' || fail 'Failed certificate reload lost its retry marker'
 volume_command -c 'sed -i "$ d" /gateway/current/nginx.conf'
-sh scripts/reload.sh
+sh scripts/certificates.sh renew
+volume_command -c 'test ! -f /gateway/certificate-reload-pending' || fail 'Certificate reload did not clear its retry marker'
+verify_revision integration || fail 'Certificate retry failed to preserve the configuration'
 # Run the real deploy script with a clean, disposable Git checkout. The candidate
 # parses, but its self-signed frontend fails the production trust check: rollback
 # must restore the previous workers/configuration, not merely exit nonzero.

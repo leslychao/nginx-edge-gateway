@@ -60,7 +60,7 @@ trap finish_site EXIT
 export SITE_DOMAIN="$domain" SITE_BACKEND="$backend" SITE_PORT="$port" SITE_SCHEME="$scheme"
 export SITE_WS="$websocket" SITE_HTTPS="$frontend_https" SITE_CERT="$certificate" SITE_TLS_NAME="$tls_name" SITE_CA="$trusted_ca"
 awk '
-    /@LISTEN@/ { gsub(/@LISTEN@/, ENVIRON["SITE_HTTPS"] == "true" ? "443 ssl proxy_protocol" : "80 proxy_protocol") }
+    /@LISTEN@/ { gsub(/@LISTEN@/, ENVIRON["SITE_HTTPS"] == "true" ? "443 ssl" : "80") }
     /@DOMAIN@/ { gsub(/@DOMAIN@/, ENVIRON["SITE_DOMAIN"]) }
     /@BACKEND_URL@/ { gsub(/@BACKEND_URL@/, ENVIRON["SITE_SCHEME"] "://" ENVIRON["SITE_BACKEND"] ":" ENVIRON["SITE_PORT"]) }
     /@TLS@/ {
@@ -84,7 +84,7 @@ awk '
     }
     /@REDIRECT@/ {
         if (ENVIRON["SITE_HTTPS"] == "true") {
-            print "server {\n    listen 80 proxy_protocol;\n    server_name " ENVIRON["SITE_DOMAIN"] ";"
+            print "server {\n    listen 80;\n    server_name " ENVIRON["SITE_DOMAIN"] ";"
             print "    location ^~ /.well-known/acme-challenge/ { root /var/www/acme; try_files $uri =404; }"
             print "    location / { return 308 https://" ENVIRON["SITE_DOMAIN"] "$request_uri; }\n}"
         }

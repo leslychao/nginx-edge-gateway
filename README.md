@@ -4,7 +4,7 @@
 
 ```text
 domain → DNS → public IP → router → NAT TCP 80/443 → Windows
-       → GOST (исходный IP в PROXY protocol) → Nginx в Docker Desktop
+       → опубликованные порты Nginx в Docker Desktop
        → server_name → proxy_pass → LAN application
 ```
 
@@ -18,21 +18,16 @@ domain → DNS → public IP → router → NAT TCP 80/443 → Windows
 - `sites/examples/`: **неактивные** примеры HTTP, WebSocket, проверяемого HTTPS backend.
 - `sites/site.conf.template`: шаблон `add-site.sh`.
 - `sites/sites.example.yaml`: декларативная документация; автоматический YAML-генератор пока не реализован.
-- `deploy/`: Compose, параметры local/dev, закреплённые образы и GOST.
-- `scripts/`: управление, сертификаты, деплой и отдельный Windows bootstrap — все `.sh`.
+- `deploy/`: Compose, параметры local/dev, закреплённые образы.
+- `scripts/`: управление, сертификаты, автоматическое продление и деплой — все `.sh`.
 
-## Windows, Docker и исходный IP
+## Windows, Docker и IP клиента
 
-Docker Desktop при публикации портов может заменять адрес клиента. Поэтому GOST 3.3.0 работает **службой Windows**, принимает обычный TCP и добавляет PROXY v1 при передаче в контейнер:
+Контейнер Nginx напрямую публикует TCP/80 и TCP/443 на Windows `.107`. TLS и доменные маршруты обрабатывает сам Nginx. Dev использует публичные 80/443; local — тестовые `127.0.0.1:28080/28443`.
 
-| Вход Windows | Единственный адрес назначения |
-|---|---|
-| `0.0.0.0:80` | `127.0.0.1:18080` → Nginx `80` |
-| `0.0.0.0:443` | `127.0.0.1:18443` → Nginx `443` |
+Docker Desktop может подменять адрес входящего TCP-соединения. Значение `$remote_addr` в access log и `X-Real-IP` — **адрес, видимый контейнеру**, а не гарантированно исходный IP посетителя. Gateway не доверяет присланным посетителем IP-заголовкам: `X-Real-IP` и `X-Forwarded-For` заменяются на `$remote_addr`, `Forwarded` удаляется. `Host` передаётся через `$host`, `X-Forwarded-Proto` через `$scheme`.
 
-GOST не принимает PROXY от посетителей, не обрабатывает TLS и не является forward proxy. Опция отправки находится именно в `handler.metadata`, см. [документацию GOST](https://gost.run/en/tutorials/proxy-protocol/). Nginx доверяет PROXY только адресу шлюза выделенной transport-сети, см. [realip module](https://nginx.org/en/docs/http/ngx_http_realip_module.html). Loopback-публикация и Firewall обязательны: прямой доступ посетителя к PROXY listener позволил бы подделать IP. Отдельно проверяйте недоступность `18080/18443` с другой LAN-машины и извне; успешный `nginx -t` этого не доказывает.
-
-`Host` передаётся через `$host`, `X-Real-IP` через восстановленный `$remote_addr`, `X-Forwarded-For` через `$proxy_add_x_forwarded_for`, `X-Forwarded-Proto` через `$scheme`. Клиентская часть XFF остаётся недоверенной: приложение должно доверять только известным proxy справа, а не первому адресу списка. Helmglass получает доверенный X-Real-IP только от gateway `172.30.242.2` в выделенной сети `nginx-edge-helmglass`; его внутренний HTTP edge — `helmglass-edge:8080`.
+Helmglass доверяет заголовкам только от gateway `172.30.242.2` в выделенной сети `nginx-edge-helmglass`; его внутренний HTTP edge — `helmglass-edge:8080`, адрес `172.30.242.3`. Приложение само управляет авторизацией и маршрутами.
 
 Таймауты: connect 5 s, read/send 60 s, WebSocket read 75 s. Для долгих WebSocket-сессий нужен heartbeat чаще 75 s. Общий лимит тела 20 MiB; увеличивать адресно для приложения, которому это требуется. CSP и HSTS задаются адресно владельцем приложения.
 
@@ -72,41 +67,42 @@ sh scripts/start.sh
 sh scripts/status.sh
 ```
 
-`install.sh` создаёт только Docker volumes/сети и загружает образы. Bootstrap-конфигурация обслуживает HTTP-01 для `helmg.ru`, возвращает 503 для приложения, отклоняет TLS. Она нужна до первого сертификата; применять её поверх работающей версии запрещено. Пока Windows-служба не переключена, действующий вход Helmglass сохраняется.
+`install.sh` создаёт Docker volumes/сети и загружает образы. Bootstrap-конфигурация обслуживает HTTP-01 для `helmg.ru`, возвращает 503 для приложения, отклоняет TLS. Она нужна до первого сертификата; применять её поверх работающей версии запрещено. Перед `start.sh` порты стенда должны быть свободны.
 
-**Отдельно на `.107`, в Git Bash от администратора**, из постоянного checkout:
+Windows Firewall меняется только явно. Если TCP/80 и TCP/443 ещё закрыты, администратор `.107` выполняет в PowerShell:
 
-```sh
-EDGE_ENV=dev sh scripts/bootstrap-windows.sh install-transport
-EDGE_ENV=dev sh scripts/bootstrap-windows.sh firewall
+```powershell
+New-NetFirewallRule -Name NginxEdgePublic -DisplayName "Nginx Edge HTTP HTTPS" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 80,443
 ```
 
-Первый шаг проверяет SHA256 официального GOST, защищает каталог `%ProgramData%/nginx-edge-gateway`, создаёт службу `NginxEdgeTransport` под LocalService с recovery restart и запускает её на временных `28080/28443`. Второй явно добавляет Firewall: public 80/443, временные LAN-only 28080/28443, запрет LAN-подключений к 18080/18443. Без этих явных команд Firewall не меняется. Временные порты в NAT не добавлять. После проверки удалить правило `NginxEdgeTest` штатными средствами Firewall.
+Docker Desktop должен автоматически запускаться при входе выделенного Windows-пользователя. Его запуск до входа в Windows этот проект не обеспечивает. Контейнеры используют `unless-stopped`; восстановление после перезагрузки Windows проверяется отдельно.
 
-Docker Desktop должен автоматически запускаться при входе выделенного Windows-пользователя. Его запуск до входа в Windows этот проект не обеспечивает. GOST — автоматическая служба; Docker containers используют `unless-stopped`. Проверка после перезагрузки Windows обязательна отдельно от перезапуска контейнера.
+## Сертификаты и первый публичный запуск
 
-## Сертификаты и перенос Helmglass
+Приватные ключи, сертификаты и ACME account хранятся в persistent volume `nginx-edge-dev-certificates`. Gateway владеет отдельным ACME webroot `nginx-edge-dev-acme`; приложение не выпускает и не продлевает публичные сертификаты.
 
-Приватные ключи, сертификаты и ACME account находятся в persistent volume `nginx-edge-dev-certificates`; каталог `nginx/certs/` исключён из Git. ACME webroot dev — существующий `ai-tasks-dev_acme-web`, поэтому первый HTTP-01 может обслуживать старый edge Helmglass, пока новый gateway готовится.
-
-Порядок согласованного переключения:
-
-1. Сохранить текущие параметры и версии Helmglass; согласовать окно с владельцем его активного чата.
-2. Проверить gateway и GOST на временных портах, IP клиента в access log и backend, закрытость loopback-портов из LAN.
-3. Изменить A-запись Timeweb и проверить публичное разрешение на `109.195.28.33`.
-4. Получить сертификат (указать действующий контактный email):
+1. Настроить публичную A-запись `helmg.ru` на `109.195.28.33` и проверить её публичным resolver.
+2. Подключить Helmglass edge к сети `nginx-edge-helmglass` как `helmglass-edge:8080`. В проекте Helmglass задать `PUBLIC_URL=https://helmg.ru`, `PUBLIC_HOST=helmg.ru`, `PUBLIC_PORT=443`; согласованно обновить Keycloak/OAuth2 Proxy, redirect URI, issuer/audience и MCP metadata.
+3. После освобождения 80/443 запустить bootstrap gateway. Проверить снаружи HTTP-01 через собственный ACME volume.
+4. Выпустить сертификат с действующим контактным email:
 
    ```sh
    EDGE_ENV=dev sh scripts/certificates.sh issue helmg.ru admin@example.com
    ```
 
-5. В проекте Helmglass применить `PUBLIC_URL=https://helmg.ru`, `PUBLIC_HOST=helmg.ru`, `PUBLIC_PORT=443`; согласованно обновить Keycloak/OAuth2 Proxy, redirect URI, issuer/audience, MCP metadata. Перевести edge на внутренний HTTP `8080` с alias `helmglass-edge`, фиксированным адресом `172.30.242.3` в общей сети. Убрать его публичные 80/443. Авторизация и все application routes остаются у Helmglass.
-6. Деплоить проверенный commit gateway; выполнить `bootstrap-windows.sh activate-transport` на `.107` — **только после освобождения 80/443**. Проверить внешний HTTPS и реальный вход через Keycloak; подтверждение только TCP/healthcheck недостаточно.
-7. После успешной проверки остановить старое продление IP-сертификата в Helmglass и убрать прежний вход по IP. Зарегистрировать `bootstrap-windows.sh schedule-renewal`: каждые шесть часов, текущий Windows-пользователь, Git Bash и `renew-scheduled.sh` из этого постоянного checkout.
+5. Деплоить проверенный commit gateway и проверить доверенный HTTPS, redirect, вход через Keycloak и приложение. Смена issuer может потребовать повторного входа.
 
-Смена issuer может потребовать повторного входа. При сбое до завершения переноса остановить GOST, вернуть **сохранённые** параметры и port bindings Helmglass, применить старую версию через его штатный deploy. Не удалять старые сертификаты/volumes до приёмки. A-запись возвращать только при необходимости полного DNS-отката.
+`start.sh` и успешный deploy запускают контейнер `nginx-edge-dev-renewal`. Он через 30 секунд после старта и затем каждые 6 часов выполняет `certificates.sh renew` из активного release. При ошибке пишет её в Docker logs, становится unhealthy и повторяет попытку через 5 минут. Последний успешный запуск должен быть не старше 7 часов. Контейнер использует закреплённый Docker CLI и сокет Docker Engine; это административный доступ к Docker, поэтому выполнять в нём можно только код доверенного репозитория. Собственных опубликованных портов и сетевого доступа у него нет.
 
-Продление: `sh scripts/certificates.sh renew`, проверка ACME staging: `sh scripts/certificates.sh dry-run`. Владелец продления один — gateway. Certbot хранит account/renewal state в persistent volume. Изменение сертификата вызывает reload **только после `nginx -t`**; ошибки возвращаются ненулевым exit code. Task Scheduler показывает Last Run Result; успешный manual dry-run не заменяет проверку реального расписания. При обновлении кода/образов обновлять и постоянный Windows-checkout задачи.
+Продление и ручные операции используют одну блокировку. После изменения сертификата reload выполняется только после успешного `nginx -t`. Если reload не прошёл, persistent marker сохраняется и следующая попытка повторяет применение сертификата. Частичная ошибка Certbot остаётся ошибкой даже при успешном применении других продлённых сертификатов.
+
+```sh
+EDGE_ENV=dev sh scripts/certificates.sh renew
+EDGE_ENV=dev sh scripts/certificates.sh dry-run
+docker --host tcp://192.168.0.107:2375 logs nginx-edge-dev-renewal
+```
+
+Certbot использует webroot HTTP-01 и собственный renewal state, см. [автоматическое продление Certbot](https://eff-certbot.readthedocs.io/en/stable/using.html#renewing-certificates). При работающем Docker Desktop продление не требует запуска скрипта с компьютера разработчика.
 
 Готовый wildcard можно импортировать в cert volume как `live/CERT_NAME/fullchain.pem` и `privkey.pem`, с ограниченными правами. Имя каталога выбирается `--certificate`; соответствие SAN hostname всё равно проверять. Автоматический DNS-01 не реализован.
 
@@ -168,7 +164,7 @@ EDGE_ENV=dev sh scripts/start.sh
 EDGE_ENV=dev sh scripts/rollback.sh PREVIOUS_RELEASE_ID
 ```
 
-Stop сначала отключает restart policy, затем посылает `nginx -s quit` и ждёт graceful shutdown. Start проверяет конфиг и восстанавливает Compose `unless-stopped`.
+Stop останавливает renewal, затем отключает restart policy gateway, затем посылает `nginx -s quit` и ждёт graceful shutdown. Start проверяет конфиг и восстанавливает Compose `unless-stopped`.
 
 Access log — JSON в stdout: клиент, hostname, HTTP method/status, upstream, время. URI/query, Cookie, Authorization, Referer не записываются. Error log — stderr уровня `crit`: обычные request-level ошибки Nginx могут содержать OAuth query, поэтому их диагностируют по access status/upstream status. `nginx -t` отдельно выводит ошибки конфигурации. Docker сохраняет до 5 файлов по 10 MiB.
 
@@ -185,4 +181,4 @@ sh tests/integration.sh
 
 Интеграционный тест создаёт отдельные `nginx-edge-local-*` ресурсы, отказывается заменять существующий local gateway, выпускает **временный тестовый CA только в disposable volume**, проверяет разные backend, заголовки, HTTP/HTTPS, проверку CA/имени upstream, WebSocket echo, неизвестный Host/SNI, невалидный reload, graceful stop/start. Рабочие сертификаты и приложение не затрагиваются.
 
-Перед объявлением live-ready отдельно подтвердить: реальные внешние IP в log/backend и устойчивость к поддельным заголовкам; блокировку loopback-портов из LAN; доверенный `https://helmg.ru`; login Keycloak/OAuth2 Proxy и Redis session; API/MCP issuer/URLs; прямой deploy из IDEA; ACME dry-run и Task Scheduler; восстановление после перезагрузки Windows; откат неуспешного deploy. Успех локальных тестов не является отметкой о выполнении этих внешних проверок.
+Перед объявлением live-ready отдельно подтвердить: устойчивость к поддельным IP-заголовкам и фактически видимый Docker адрес; доверенный `https://helmg.ru`; login Keycloak/OAuth2 Proxy и Redis session; API/MCP issuer/URLs; прямой deploy из IDEA; ACME dry-run и успешный запуск renewal-контейнера; восстановление после перезагрузки Windows; откат неуспешного deploy. Успех локальных тестов не является отметкой о выполнении этих внешних проверок.

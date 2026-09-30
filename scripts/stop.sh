@@ -2,6 +2,7 @@
 set -eu
 . "$(dirname "$0")/lib.sh"
 acquire_lock
+compose stop renewal
 running || exit 0
 # QUIT on its own would trigger unless-stopped after the master exits.
 docker update --restart=no "$GATEWAY_NAME" >/dev/null

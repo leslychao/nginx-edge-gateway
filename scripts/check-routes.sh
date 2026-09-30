@@ -1,15 +1,14 @@
 #!/bin/sh
 set -eu
 . "$(dirname "$0")/lib.sh"
-# The probe sends PROXY v1 itself inside the network namespace. It tests routing,
-# certificate trust and response codes, NOT the native Windows source-IP path.
+# Test routing, certificate trust and responses in the gateway network namespace.
+# Public DNS/NAT reachability must additionally be checked from outside the LAN.
 docker run --rm -i --network "container:$GATEWAY_NAME" --entrypoint python "$CERTBOT_IMAGE" - <<'PY'
 import socket
 import ssl
 
 def request(host, port, path, tls=False):
     sock = socket.create_connection(('127.0.0.1', port), timeout=10)
-    sock.sendall(f'PROXY TCP4 198.51.100.10 127.0.0.1 12345 {port}\r\n'.encode())
     if tls:
         sock = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
     with sock:

@@ -11,6 +11,8 @@ previous=$(active_release)
 if [ "$previous" = "releases/$revision" ]; then
     validate_release current
     verify_revision "$revision" || fail 'Active release is not running.'
+    sh scripts/check-routes.sh
+    compose up -d --no-build renewal
     exit 0
 fi
 if running; then
@@ -40,4 +42,5 @@ if running; then reload_checked; else start_gateway; fi
 verify_revision "$revision" || fail 'New configuration revision was not applied.'
 # Verify both the loaded revision and the application route before accepting it.
 sh scripts/check-routes.sh
+compose up -d --no-build renewal
 printf 'Deployed %s\n' "$revision"

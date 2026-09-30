@@ -82,8 +82,9 @@ stage_release() {
     release_temp=$(mktemp -d "$ROOT/.work/stage.XXXXXX")
     cp "$release_source/nginx.conf" "$release_temp/"
     cp -R "$release_source/conf.d" "$release_source/snippets" "$release_temp/"
+    mkdir "$release_temp/automation"
+    cp -R "$ROOT/scripts" "$ROOT/deploy" "$release_temp/automation/"
     mkdir "$release_temp/runtime"
-    printf 'set_real_ip_from %s;\n' "$TRANSPORT_GATEWAY" > "$release_temp/runtime/transport.conf"
     cat > "$release_temp/runtime/revision.conf" <<EOF
 server {
     listen 127.0.0.1:8081;
