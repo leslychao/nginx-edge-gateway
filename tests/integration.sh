@@ -29,7 +29,7 @@ until docker exec "$GATEWAY_NAME-fixture" test -f /certificates/ready; do
 done
 test_config=$(mktemp -d "$ROOT/.work/integration.XXXXXX")
 cp nginx/nginx.conf "$test_config/"
-cp -R nginx/conf.d nginx/snippets "$test_config/"
+cp -R nginx/conf.d nginx/snippets nginx/stream.d "$test_config/"
 for test_site in plain second ws secure wrong-name untrusted; do
     test_port=8080
     test_scheme=http
@@ -90,12 +90,33 @@ verify_revision integration || fail 'Certificate retry failed to preserve the co
 deployment_checkout=$(mktemp -d "$ROOT/.work/deployment.XXXXXX")
 deployment_checkout=.work/${deployment_checkout##*/}
 cp -R scripts deploy nginx sites .gitignore .gitattributes "$deployment_checkout/"
+# The candidate changes a published port; its intentional trust failure must also
+# restore the old Docker binding, not only the previous Nginx workers.
+sed -i 's/127.0.0.1:25349/127.0.0.1:25350/' "$deployment_checkout/deploy/.env.local"
 git -C "$deployment_checkout" init -q
 git -C "$deployment_checkout" add .
 git -C "$deployment_checkout" -c user.name=GatewayTest -c user.email=gateway-test@example.invalid commit -qm fixture
 candidate_sha=$(git -C "$deployment_checkout" rev-parse HEAD)
+# Make the saved deployment fail to restore after the candidate fails validation.
+# Only this disposable release is changed; a real failure must still clean its
+# temporary files and operation lock, preserving the original deployment status.
+volume_command -c 'printf "\nstart_gateway() { return 71; }\n" >> /gateway/releases/integration/automation/scripts/lib.sh'
+failed_restore_status=0
+sh "$deployment_checkout/scripts/deploy.sh" "$candidate_sha" || failed_restore_status=$?
+[ "$failed_restore_status" = 1 ] || fail 'Failed rollback replaced the original deploy exit code'
+if docker inspect "$GATEWAY_NAME-operation-lock" >/dev/null 2>&1; then fail 'Failed rollback left the operation lock'; fi
+[ -z "$(find "$deployment_checkout/.work" -maxdepth 1 -type d -name 'restore.*' -print)" ] || fail 'Failed rollback left temporary files'
+candidate_turn_port=$(docker inspect --format '{{range index .HostConfig.PortBindings "5349/tcp"}}{{.HostPort}}{{end}}' "$GATEWAY_NAME")
+[ "$candidate_turn_port" = 25350 ] || fail 'Candidate did not apply its TURN TLS Docker port'
+volume_command -c 'sed -i "$ d" /gateway/releases/integration/automation/scripts/lib.sh'
+sh scripts/rollback.sh integration
+verify_revision integration || fail 'Manual rollback did not restore the prior loaded version'
+manual_turn_port=$(docker inspect --format '{{range index .HostConfig.PortBindings "5349/tcp"}}{{.HostPort}}{{end}}' "$GATEWAY_NAME")
+[ "$manual_turn_port" = 25349 ] || fail 'Manual rollback did not restore the TURN TLS Docker port'
 if sh "$deployment_checkout/scripts/deploy.sh" "$candidate_sha"; then fail 'Untrusted frontend incorrectly passed deployment health check'; fi
 verify_revision integration || fail 'Deployment rollback did not restore the prior loaded version'
+restored_turn_port=$(docker inspect --format '{{range index .HostConfig.PortBindings "5349/tcp"}}{{.HostPort}}{{end}}' "$GATEWAY_NAME")
+[ "$restored_turn_port" = 25349 ] || fail 'Deployment rollback did not restore the TURN TLS Docker port'
 if sh "$deployment_checkout/scripts/deploy.sh" "$candidate_sha"; then fail 'Retry accepted an untrusted frontend'; fi
 verify_revision integration || fail 'Retry with identical immutable release did not roll back'
 sh "$deployment_checkout/scripts/add-site.sh" --domain sample.example.com --backend helmglass-edge --port 8080

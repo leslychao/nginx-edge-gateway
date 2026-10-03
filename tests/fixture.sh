@@ -85,6 +85,25 @@ for port in [8080, 8090, 8443]:
         context.set_servername_callback(lambda sock, name, ctx: setattr(sock, 'sni_name', name))
         server.socket = context.wrap_socket(server.socket, server_side=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()
+class TurnTcp(socketserver.StreamRequestHandler):
+    def handle(self):
+        proxy = self.rfile.readline(108).decode().rstrip('\r\n')
+        assert proxy.startswith('PROXY TCP4 '), proxy
+        for payload in self.rfile:
+            self.wfile.write((json.dumps({'proxy': proxy, 'payload': payload.decode().rstrip('\n')})+'\n').encode())
+            self.wfile.flush()
+
+class TurnUdp(socketserver.BaseRequestHandler):
+    def handle(self):
+        data, connection = self.request
+        value = {'payload': data.decode(), 'upstreamPort': self.client_address[1]}
+        connection.sendto(json.dumps(value).encode(), self.client_address)
+        # TURN can send unsolicited channel data after the allocation response.
+        threading.Timer(0.3, lambda: connection.sendto(json.dumps({**value, 'late': True}).encode(), self.client_address)).start()
+
+for server in [socketserver.ThreadingTCPServer(('0.0.0.0', 5349), TurnTcp),
+               socketserver.ThreadingUDPServer(('0.0.0.0', 3478), TurnUdp)]:
+    threading.Thread(target=server.serve_forever, daemon=True).start()
 (root/'ready').write_text('ready')
 threading.Event().wait()
 PY

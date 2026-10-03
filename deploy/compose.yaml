@@ -8,6 +8,9 @@ services:
     ports:
       - ${HTTP_BIND:?Required}:80
       - ${HTTPS_BIND:?Required}:443
+      - ${TURN_BIND:?Required}:3478/tcp
+      - ${TURN_BIND:?Required}:3478/udp
+      - ${TURN_TLS_BIND:?Required}:5349/tcp
     volumes:
       - config:/gateway:ro
       - certificates:/certificates:ro

@@ -1,18 +1,19 @@
 # nginx-edge-gateway
 
-Единый Nginx в **Docker Desktop на Windows 192.168.0.107**. Он выбирает внутреннее приложение по домену. Первое приложение — Helmglass, публичный адрес `https://helmg.ru`.
+Единый Nginx в **Docker Desktop на Windows 192.168.0.107**. Он выбирает внутреннее приложение по домену и транспорту. Первое приложение — Helmglass, публичный адрес `https://helmg.ru`.
 
 ```text
-domain → DNS → public IP → router → NAT TCP 80/443 → Windows
+domain → DNS → public IP → router → NAT TCP 80/443/3478/5349 + UDP 3478 → Windows
        → опубликованные порты Nginx в Docker Desktop
-       → server_name → proxy_pass → LAN application
+       → HTTP server_name / stream listener → internal Nginx → application
 ```
 
 Приложения остаются самостоятельными. Gateway не устанавливает их, не управляет пользователями и не переносит к себе авторизацию Helmglass.
 
 ## Состав
 
-- `nginx/nginx.conf`: общие настройки, `include conf.d/*.conf;`.
+- `nginx/nginx.conf`: общие HTTP и stream-настройки.
+- `nginx/stream.d/`: TCP/UDP-входы приложений, включая TURN Helmglass.
 - `nginx/conf.d/`: активные hostname, каждый в своём файле; `00-default.conf` отклоняет неизвестные имена.
 - `nginx/snippets/`: заголовки proxy, WebSocket, TLS, общие security headers.
 - `sites/examples/`: **неактивные** примеры HTTP, WebSocket, проверяемого HTTPS backend.
@@ -23,7 +24,9 @@ domain → DNS → public IP → router → NAT TCP 80/443 → Windows
 
 ## Windows, Docker и IP клиента
 
-Контейнер Nginx напрямую публикует TCP/80 и TCP/443 на Windows `.107`. TLS и доменные маршруты обрабатывает сам Nginx. Dev использует публичные 80/443; local — тестовые `127.0.0.1:28080/28443`.
+Контейнер Nginx публикует на Windows `.107` HTTP(S) TCP/80 и TCP/443, TURN TCP/3478 и UDP/3478, TURN TLS TCP/5349. Dev использует эти порты; local — `127.0.0.1:28080/28443`, `127.0.0.1:23478` для TURN TCP/UDP и `127.0.0.1:25349` для TURN TLS.
+
+TLS для HTTPS и TURN завершается на этом gateway с теми же централизованно продлеваемыми сертификатами `helmg.ru`. TCP/3478 и TLS/5349 направляются на `helmglass-edge:5349` с PROXY protocol v1; внутренний Nginx передаёт этот заголовок вместе с потоком в доверенный PROXY-listener coturn. UDP/3478 направляется на `helmglass-edge:3478`; ассоциация сохраняется между allocation, refresh и channel data, таймаут бездействия — 10 минут. Лимиты «один запрос/ответ» не применяются. Gateway выбирает транспорт и приложение, внутренний Nginx владеет маршрутом к компоненту. Relay-порты gateway не публикует; внутренний медиапуть и ограничения relay определяет Helmglass.
 
 Docker Desktop может подменять адрес входящего TCP-соединения. Значение `$remote_addr` в access log и `X-Real-IP` — **адрес, видимый контейнеру**, а не гарантированно исходный IP посетителя. Gateway не доверяет присланным посетителем IP-заголовкам: `X-Real-IP` и `X-Forwarded-For` заменяются на `$remote_addr`, `Forwarded` удаляется. `Host` передаётся через `$host`, `X-Forwarded-Proto` через `$scheme`.
 
@@ -44,16 +47,18 @@ app2.example.com  A PUBLIC_IP
 api.example.com   A PUBLIC_IP
 ```
 
-Все имена могут указывать на один IP: backend выбирается после соединения по `server_name`, HTTPS использует SNI. Новое приложение не требует нового NAT-правила.
+Все HTTP(S)-имена могут указывать на один IP: backend выбирается после соединения по `server_name`, HTTPS использует SNI. Дополнительные TCP/UDP-транспорты требуют соответствующих портов и NAT-правил.
 
-На роутере нужны только:
+Для публичного HTTP(S) и TURN на роутере нужны:
 
 ```text
 PUBLIC_IP:80  → 192.168.0.107:80  TCP
 PUBLIC_IP:443 → 192.168.0.107:443 TCP
+PUBLIC_IP:3478 → 192.168.0.107:3478 TCP/UDP
+PUBLIC_IP:5349 → 192.168.0.107:5349 TCP
 ```
 
-На TP-Link `192.168.0.1` эти правила уже обнаружены; DHCP reservation `.107` сохраняется. Не трогать остальные игровые правила. Docker API `2375` не добавлять в NAT; разрешать его только доверенным администраторам LAN. Он даёт полный контроль Docker.
+На TP-Link `192.168.0.1` ранее подтверждены правила HTTP(S) 80/443; доступность новых TURN-портов из внешней сети проверяется отдельно. DHCP reservation `.107` сохраняется. Не трогать остальные игровые правила. Docker API `2375` не добавлять в NAT; разрешать его только доверенным администраторам LAN. Он даёт полный контроль Docker.
 
 Для `helmg.ru` используется A `109.195.28.33`, TTL 600. MX/TXT/NS сохраняются; `www`, wildcard и AAAA автоматически не добавляются. Роутер использует динамическое получение WAN IP: при изменении публичного адреса потребуется DDNS или обновление A-записи через API DNS-провайдера. Результат DNS-переключения проверять публичным resolver, не только панелью Timeweb. Домен должен быть зарегистрирован и делегирован на DNS-серверы провайдера; запись в панели сама по себе не обеспечивает публичное разрешение.
 
@@ -71,10 +76,12 @@ sh scripts/status.sh
 
 `install.sh` создаёт Docker volumes/сети и загружает образы. Bootstrap-конфигурация обслуживает HTTP-01 для `helmg.ru`, возвращает 503 для приложения, отклоняет TLS. Она нужна до первого сертификата; применять её поверх работающей версии запрещено. Перед `start.sh` порты стенда должны быть свободны.
 
-Windows Firewall меняется только явно. Если TCP/80 и TCP/443 ещё закрыты, администратор `.107` выполняет в PowerShell:
+Windows Firewall меняется только явно. Для отсутствующих разрешений HTTP(S)/TURN администратор `.107` выполняет соответствующие команды в PowerShell:
 
 ```powershell
 New-NetFirewallRule -Name NginxEdgePublic -DisplayName "Nginx Edge HTTP HTTPS" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 80,443
+New-NetFirewallRule -Name NginxEdgeTurnTcp -DisplayName "Nginx Edge TURN TCP TLS" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 3478,5349
+New-NetFirewallRule -Name NginxEdgeTurnUdp -DisplayName "Nginx Edge TURN UDP" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 3478
 ```
 
 Docker Desktop должен автоматически запускаться при входе выделенного Windows-пользователя. Его запуск до входа в Windows этот проект не обеспечивает. Контейнеры используют `unless-stopped`; восстановление после перезагрузки Windows проверяется отдельно.
@@ -151,7 +158,7 @@ EDGE_ENV=dev sh scripts/deploy.sh
 EDGE_ENV=dev sh scripts/deploy.sh FULL_COMMIT_SHA
 ```
 
-Алгоритм deploy: проверить SHA и чистоту checkout → получить общую блокировку → скопировать конфигурацию в immutable `releases/SHA` в Docker volume → проверить с реальными сертификатами, закреплённым образом и рабочей сетью → атомарно переключить `current` → ещё раз `nginx -t` → reload → проверить загруженный SHA, redirect, TLS и маршрут Helmglass. При ошибке после активации возвращается предыдущая версия. Сетевая проверка из namespace контейнера не доказывает доступность из Интернета; внешняя приёмка выполняется отдельно.
+Алгоритм deploy: проверить SHA и чистоту checkout → получить общую блокировку → скопировать конфигурацию в immutable `releases/SHA` в Docker volume → проверить с реальными сертификатами, закреплённым образом и рабочей сетью → атомарно переключить `current` → применить Compose gateway → проверить загруженный SHA, redirect, TLS и маршрут Helmglass. При неизменном Compose выполняется проверенный reload; изменение опубликованных портов требует пересоздания контейнера с коротким прерыванием соединений. При ошибке после активации восстанавливаются предыдущие Nginx-конфигурация и Compose-манифест, включая порты. Сетевая проверка из namespace контейнера не доказывает доступность из Интернета; внешняя приёмка выполняется отдельно.
 
 Блокировка — атомарно созданный контейнер `nginx-edge-dev-operation-lock`; она общая для deploy, ручного reload, add-site и сертификатов, даже с разных компьютеров. После аварийного завершения клиента lock может остаться. Удалять его вручную **только убедившись, что операции больше нет**; не делать автоматический сброс по таймеру.
 
@@ -170,9 +177,9 @@ Stop останавливает renewal, затем отключает restart p
 
 Access log — JSON в stdout: клиент, hostname, HTTP method/status, upstream, время. URI/query, Cookie, Authorization, Referer не записываются. Error log — stderr уровня `crit`: обычные request-level ошибки Nginx могут содержать OAuth query, поэтому их диагностируют по access status/upstream status. `nginx -t` отдельно выводит ошибки конфигурации. Docker сохраняет до 5 файлов по 10 MiB.
 
-Конфигурации остаются в `nginx-edge-dev-config`, сертификаты в отдельном persistent volume. Держать резервную копию этих volumes в защищённом хранилище. Не делать `down -v`, не публиковать ключи. `rollback.sh` проверяет выбранную версию перед reload; старые releases автоматически не удаляются.
+Конфигурации остаются в `nginx-edge-dev-config`, сертификаты в отдельном persistent volume. Держать резервную копию этих volumes в защищённом хранилище. Не делать `down -v`, не публиковать ключи. `rollback.sh` и автоматический откат используют одного владельца восстановления: проверяют выбранную Nginx-конфигурацию, применяют сохранённые в этом release Compose/env, включая опубликованные порты, и подтверждают загруженную revision. Ошибка восстановления явно сообщается; временные файлы и блокировка освобождаются, исходный код ошибки deploy сохраняется. Старые releases автоматически не удаляются.
 
-Deploy здесь обновляет конфигурацию. При смене Nginx image digest он останавливается с понятной ошибкой: сначала провести отдельную проверку нового образа и управляемое пересоздание gateway с возможностью вернуть прежний image. Обновление образа не маскируется под reload.
+Deploy обновляет конфигурацию и применяет изменения Compose, включая опубликованные порты. При смене Nginx image digest он останавливается с понятной ошибкой: сначала провести отдельную проверку нового образа и управляемое пересоздание gateway с возможностью вернуть прежний image. Обновление образа не маскируется под reload.
 
 ## Проверки
 
@@ -181,6 +188,6 @@ sh scripts/validate.sh
 sh tests/integration.sh
 ```
 
-Интеграционный тест создаёт отдельные `nginx-edge-local-*` ресурсы, отказывается заменять существующий local gateway, выпускает **временный тестовый CA только в disposable volume**, проверяет разные backend, заголовки, HTTP/HTTPS, передачу redirect с тестовой cookie размером 10 KiB через HTTP/HTTPS upstream и TLS-маршрут Helmglass, проверку CA/имени upstream, WebSocket echo, неизвестный Host/SNI, невалидный reload, graceful stop/start. Рабочие сертификаты и приложение не затрагиваются.
+Интеграционный тест создаёт отдельные `nginx-edge-local-*` ресурсы, отказывается заменять существующий local gateway, выпускает **временный тестовый CA только в disposable volume**, проверяет разные backend, заголовки, HTTP/HTTPS, передачу redirect с тестовой cookie размером 10 KiB через HTTP/HTTPS upstream и TLS-маршрут Helmglass, проверку CA/имени upstream, WebSocket echo, неизвестный Host/SNI, TURN TCP/TLS с PROXY v1, сохранение UDP-ассоциации и отложенные ответы, невалидный reload, откат изменённого Docker-порта, graceful stop/start. Рабочие сертификаты и приложение не затрагиваются.
 
 Перед объявлением live-ready отдельно подтвердить: устойчивость к поддельным IP-заголовкам и фактически видимый Docker адрес; доверенный `https://helmg.ru`; login Keycloak/OAuth2 Proxy и Redis session; API/MCP issuer/URLs; прямой deploy из IDEA; ACME dry-run и успешный запуск renewal-контейнера; восстановление после перезагрузки Windows; откат неуспешного deploy. Успех локальных тестов не является отметкой о выполнении этих внешних проверок.

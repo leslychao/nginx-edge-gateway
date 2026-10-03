@@ -10,6 +10,7 @@ acquire_lock
 previous=$(active_release)
 if [ "$previous" = "releases/$revision" ]; then
     validate_release current
+    start_gateway
     verify_revision "$revision" || fail 'Active release is not running.'
     sh scripts/check-routes.sh
     compose up -d --no-build renewal
@@ -26,19 +27,27 @@ rollback_on_exit() {
     if [ "$deploy_status" -ne 0 ]; then
         printf '%s\n' 'Deployment failed; restoring previous release.' >&2
         if [ -n "$previous" ]; then
-            activate_release "$previous"
-            if running; then reload_checked; else start_gateway; fi
-            verify_revision "${previous#releases/}" || printf '%s\n' 'ROLLBACK VERIFICATION FAILED' >&2
+            if ! restore_release "$previous"; then
+                printf '%s\n' 'ROLLBACK FAILED: the previous gateway deployment was not restored.' >&2
+            fi
         else
-            compose stop gateway
+            if ! compose stop gateway; then
+                printf '%s\n' 'ROLLBACK FAILED: the first gateway deployment could not be stopped.' >&2
+            fi
         fi
     fi
-    docker rm "$LOCK_ID" >/dev/null
+    if ! docker rm "$LOCK_ID" >/dev/null; then
+        printf '%s\n' 'Could not release the gateway operation lock.' >&2
+        [ "$deploy_status" -ne 0 ] || deploy_status=1
+    fi
     exit "$deploy_status"
 }
 trap rollback_on_exit EXIT
+previous_container=$(docker inspect --format '{{.Id}}' "$GATEWAY_NAME" 2>/dev/null || true)
 activate_release "releases/$revision"
-if running; then reload_checked; else start_gateway; fi
+start_gateway
+current_container=$(docker inspect --format '{{.Id}}' "$GATEWAY_NAME")
+if [ "$current_container" = "$previous_container" ]; then reload_checked; fi
 verify_revision "$revision" || fail 'New configuration revision was not applied.'
 # Verify both the loaded revision and the application route before accepting it.
 sh scripts/check-routes.sh

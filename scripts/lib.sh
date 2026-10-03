@@ -73,6 +73,34 @@ verify_revision() {
     done
     return 1
 }
+cleanup_restore() {
+    restore_status=$?
+    trap - EXIT
+    if ! rm -rf "$restore_directory"; then
+        printf '%s\n' 'Could not remove rollback preparation files.' >&2
+        [ "$restore_status" -ne 0 ] || restore_status=1
+    fi
+    exit "$restore_status"
+}
+
+# Automatic and manual rollback share restoration of the saved deployment inputs.
+restore_release() (
+    trap - EXIT
+    restore_target=$1
+    validate_release "$restore_target" || exit 1
+    mkdir -p "$ROOT/.work" || exit 1
+    restore_directory=$(mktemp -d "$ROOT/.work/restore.XXXXXX") || exit 1
+    case "$restore_directory" in "$ROOT"/.work/restore.*) ;; *) fail 'Invalid rollback preparation path' ;; esac
+    trap cleanup_restore EXIT
+    # Explicit checks also apply when the caller handles this function in an if.
+    volume_command -c "tar -cf - -C \"/gateway/\$1/automation\" scripts deploy" sh "$restore_target" > "$restore_directory/automation.tar" || exit 1
+    tar -xf "$restore_directory/automation.tar" -C "$restore_directory" || exit 1
+    activate_release "$restore_target" || exit 1
+    # Load the selected release's env and Compose under the caller's operation lock.
+    sh -c '. "$(dirname "$0")/lib.sh"; start_gateway; reload_checked' "$restore_directory/scripts/restore" || exit 1
+    verify_revision "${restore_target#releases/}" || exit 1
+)
+
 stage_release() {
     release_source=$1
     release_id=$2
@@ -82,6 +110,7 @@ stage_release() {
     release_temp=$(mktemp -d "$ROOT/.work/stage.XXXXXX")
     cp "$release_source/nginx.conf" "$release_temp/"
     cp -R "$release_source/conf.d" "$release_source/snippets" "$release_temp/"
+    if [ -d "$release_source/stream.d" ]; then cp -R "$release_source/stream.d" "$release_temp/"; fi
     mkdir "$release_temp/automation"
     cp -R "$ROOT/scripts" "$ROOT/deploy" "$release_temp/automation/"
     mkdir "$release_temp/runtime"
